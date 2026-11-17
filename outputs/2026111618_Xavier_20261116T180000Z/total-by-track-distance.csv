@@ -1,0 +1,4 @@
+﻿Track_distance,km,Country,Buildings,Residential_Buildings,Nonresidential_Buildings,Building_Value,Population,Road_km,Road_Value,Crop_Value,Infrastructure_Value,Evacuation_Centres,Health_Facilties,Schools
+200+ km away from track,,Cook Islands,17911,10359,7552,1396731841,14746,597.38,116427209,9046077,73025177,44,9,30
+Within 25km of track,25,Cook Islands,150,32,118,2401391,70,12.42,485436,0,0,0,0,1
+Within 100km of track,100,Cook Islands,485,281,204,11779748,463,20.82,1369498,164164,1076595,0,0,1

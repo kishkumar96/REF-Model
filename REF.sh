@@ -14,7 +14,7 @@ source .env
 
 PROJECT_SLUG=niwa/partner/rsmc-tcwc
 MODEL_NAME=Rapid-Exposure-Forecast
-TRACK_ID=215
+TRACK_ID=${TRACK_ID:-229}
 TRACK_URL="https://pacific-disaster-api.spc.int/partner_api/v1/cyclone_track/${TRACK_ID}/?format=json"
 DOWNLOAD_OUTPUTS=true   # download the run's outputs when it finishes (true/false)
 OUTPUT_DIR=outputs      # outputs go in ${OUTPUT_DIR}/<cyclone name>_<issue time>/

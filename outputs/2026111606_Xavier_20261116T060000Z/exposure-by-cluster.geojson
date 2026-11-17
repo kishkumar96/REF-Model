@@ -1,0 +1,7 @@
+{
+  "type":"FeatureCollection",
+  "features":[
+
+    {"type":"Feature","geometry":{"coordinates":[-165.84711794,-10.85020396],"type":"Point"},"properties":{"exposure.UseType":"Junior Secondary","exposure.Asset":"School","exposure.Value":0,"exposure.Details":"Apii Niua","exposure.Structure":null,"exposure.Wall_Material":null,"exposure.Condition":null,"Country":"Cook Islands","Region":"Pukapuka","ClusterType":"School","Track_distance":"Within 150km of track","Danger":"Possible Gale Winds","WindSpeed_knots":34,"WindSpeed_kmph":63,"In_Floodplain":"false"}},
+    {"type":"Feature","geometry":{"coordinates":[-165.41494307,-11.55643079],"type":"Point"},"properties":{"exposure.UseType":"Junior Secondary","exposure.Asset":"School","exposure.Value":0,"exposure.Details":"Apii Nassau","exposure.Structure":null,"exposure.Wall_Material":null,"exposure.Condition":null,"Country":"Cook Islands","Region":"Nassau","ClusterType":"School","Track_distance":"Within 150km of track","Danger":"Possible Gale Winds","WindSpeed_knots":34,"WindSpeed_kmph":63,"In_Floodplain":"false"}}  ]
+}

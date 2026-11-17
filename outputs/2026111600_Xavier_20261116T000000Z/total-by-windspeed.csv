@@ -1,0 +1,5 @@
+﻿WindSpeed,Danger,Country,Buildings,Residential_Buildings,Nonresidential_Buildings,Building_Value,Population,Road_km,Road_Value,Crop_Value,Infrastructure_Value,Evacuation_Centres,Health_Facilties,Schools
+,Track Uncertainty,Cook Islands,825,72,753,30168665,358,23.88,1802141,319176,1605816,2,0,3
+,Not exposed,Cook Islands,17124,10298,6826,1367150860,14408,577.16,114767776,8664553,71419361,42,9,27
+34.0,Possible Gale Winds,Cook Islands,597,302,295,13593454,513,29.58,1712227,226512,1076595,0,0,2
+,Track Uncertainty,Samoa,88415,45964,42451,4693939412,201115,2888.01,591157879,29465927,175971770,6,103,804
