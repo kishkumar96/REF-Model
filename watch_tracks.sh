@@ -21,7 +21,14 @@ exec 9>.watch.lock
 flock -n 9 || { echo "$(date -u +%FT%TZ) another check is still running, skipping"; exit 0; }
 
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
+[ -f .env ] || { echo "$(date -u +%FT%TZ) ERROR: .env is missing in $(pwd)"; exit 1; }
 set -a; . ./.env; set +a
+[ -n "${API_KEY:-}" ] || { echo "$(date -u +%FT%TZ) ERROR: API_KEY is empty in .env"; exit 1; }
+CAN_PUSH=1
+if [ -z "${PARTNER_API_TOKEN:-}" ] && { [ -z "${PARTNER_USERNAME:-}" ] || [ -z "${PARTNER_PASSWORD:-}" ]; }; then
+  CAN_PUSH=0
+  echo "$(date -u +%FT%TZ) WARNING: no Pacific API login or token in .env: will run REF and keep the outputs, but not upload"
+fi
 BASE=https://pacific-disaster-api.spc.int/partner_api
 P=$BASE/v1
 MAX_AGE_H="${MAX_AGE_H:-48}"
@@ -69,11 +76,16 @@ echo "$NEW" | while read -r id name issued; do
   log "track $id ($name, issued $issued): new"
   if [ "$DRY" = 1 ]; then log "  dry run: would run REF.sh then push $dir"; continue; fi
 
-  TRACK_ID="$id" ./REF.sh
+  if [ -f "$dir/regional-summary.csv" ]; then
+    log "  outputs already in $dir, skipping the REF run"
+  else
+    TRACK_ID="$id" ./REF.sh
+  fi
   if [ ! -f "$dir/regional-summary.csv" ]; then
     echo $((tries + 1)) > ".watch_failed/$id"
     log "  REF run failed or produced no outputs (attempt $((tries + 1))/$MAX_TRIES)"; continue
   fi
+  if [ "$CAN_PUSH" = 0 ]; then log "  outputs saved in $dir, not uploaded (no Pacific login)"; continue; fi
   TOKEN="$(get_token)"
   if [ -z "$TOKEN" ]; then log "  could not get a Partner API token, outputs are in $dir; push later"; continue; fi
   PARTNER_API_TOKEN="$TOKEN" python3 -I push_runs.py "$dir" || log "  push failed"
