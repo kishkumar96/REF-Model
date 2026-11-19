@@ -1,2 +1,13 @@
 vchc/
 .env
+outputs/
+__pycache__/
+watch.log
+upload.log
+.watch.lock
+.upload.lock
+.watch_failed/
+model_run_response.txt
+cyclone-latest.geojson
+affected_entries.tsv
+old_files_to_delete.txt
