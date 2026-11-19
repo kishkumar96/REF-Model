@@ -7,8 +7,14 @@ for each run folder given. Mirrors how the existing Wati runs are built.
 
 Uses curl for every request (the server blocks Python's own HTTP client).
 Tokens expire after 2 days. COUNTRY_ID defaults to 3 (CK).
+
+Countries: each run's regional-summary.csv lists the countries the storm affects. The run is linked
+to the cyclone's event for EACH of those countries. The 9 Risk entries get one country: COUNTRY_ID
+if the run affects it, otherwise the country with the most rows.
+  --create-events   create the cyclone's event for a country that has none (or CREATE_EVENTS=1)
+  --link-only       for runs already on the server, only (re)do the event linking
 """
-import json, os, re, subprocess, sys
+import csv, json, os, re, subprocess, sys
 
 P = os.environ.get("PARTNER_API_URL", "https://pacific-disaster-api.spc.int/partner_api/v1")
 TOKEN = os.environ.get("PARTNER_API_TOKEN", "")
@@ -43,14 +49,72 @@ def auth():
     return ["-H", f"Authorization: Token {TOKEN}"]
 
 dry = "--dry-run" in sys.argv
+create_events = "--create-events" in sys.argv or os.environ.get("CREATE_EVENTS") == "1"
+link_only = "--link-only" in sys.argv
 folders = [a for a in sys.argv[1:] if not a.startswith("--")]
 if not folders:
     sys.exit(__doc__)
 if not TOKEN and not dry:
     sys.exit("PARTNER_API_TOKEN is not set")
 
-tracks = {t["cyclone_name"]: t for t in get(f"{P}/cyclone_track/?format=json")}
-existing = {r["name"] for r in get(f"{P}/model_run/?format=json")}
+def as_list(r):
+    return r.get("results", r) if isinstance(r, dict) else r
+
+COUNTRY_BY_NAME = {c["long_name"].strip().lower(): c["id"] for c in as_list(get(f"{P}/country/?format=json"))}
+NAME_BY_ID = {c["id"]: c["long_name"].strip() for c in as_list(get(f"{P}/country/?format=json"))}
+
+def country_id(name):
+    n = name.strip().lower()
+    for k, v in COUNTRY_BY_NAME.items():
+        if n == k or n.startswith(k) or k.startswith(n):
+            return v
+    return None
+
+def folder_countries(folder):
+    """{country id: number of rows} for the countries in the run's regional-summary.csv"""
+    counts = {}
+    try:
+        with open(f"{folder}/regional-summary.csv", encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                cid = country_id(row.get("Country", ""))
+                if cid:
+                    counts[cid] = counts.get(cid, 0) + 1
+                elif row.get("Country"):
+                    print(f"   (country '{row['Country']}' is not on the API's country list, ignored)")
+    except OSError:
+        pass
+    return counts
+
+def link_events(run_id, cyc, issued, cids):
+    """add the run to the cyclone's event in each affected country (matched by name + country)"""
+    events = as_list(get(f"{P}/event/?format=json&page_size=100"))
+    for cid in cids:
+        cname = NAME_BY_ID.get(cid, cid)
+        match = [e for e in events if cyc.lower() in e["title"].lower() and e["country"] == cid]
+        if match:
+            ev = match[0]
+            if run_id in ev["model_runs"]:
+                print(f"   run {run_id} already in event {ev['id']} '{ev['title']}' ({cname})"); continue
+            if dry:
+                print(f"   would add run {run_id} to event {ev['id']} '{ev['title']}' ({cname})"); continue
+            c, b = curl(auth() + ["-H", "Content-Type: application/json", "-X", "PATCH",
+                                  "-d", json.dumps({"model_runs": sorted(set(ev["model_runs"]) | {run_id})}),
+                                  f"{P}/event/{ev['id']}/"])
+            print(f"   added run {run_id} to event {ev['id']} '{ev['title']}' ({cname}): HTTP {c}")
+        elif create_events:
+            if dry:
+                print(f"   would create event 'Tropical Cyclone {cyc}' for {cname} with run {run_id}"); continue
+            c, b = curl(auth() + ["-H", "Content-Type: application/json", "-X", "POST",
+                                  "-d", json.dumps({"title": f"Tropical Cyclone {cyc}", "event_datetime": issued,
+                                                    "event_type": 1, "country": cid, "model_runs": [run_id]}),
+                                  f"{P}/event/"])
+            print(f"   created event 'Tropical Cyclone {cyc}' for {cname} with run {run_id}: HTTP {c}"
+                  + ("" if c == 201 else f" {b[:200]}"))
+        else:
+            print(f"   no event for {cyc} in {cname}: re-run with --create-events, or create one and add run {run_id}")
+
+tracks = {t["cyclone_name"]: t for t in as_list(get(f"{P}/cyclone_track/?format=json"))}
+existing = {r["name"]: r["id"] for r in get(f"{P}/model_run/?format=json")}
 
 for folder in folders:
     folder = folder.rstrip("/")
@@ -61,23 +125,37 @@ for folder in folders:
         print(f"{base}: no SPC track named {name}, skipped"); continue
     stamp, cyc = name.split("_", 1)
     run_name = f"Rapid Exposure Forecast - TC {cyc} {stamp}"
+    counts = folder_countries(folder)
+    cids = sorted(counts) or [COUNTRY]
+    cnames = ", ".join(str(NAME_BY_ID.get(c, c)) for c in cids)
     if run_name in existing:
-        print(f"{base}: '{run_name}' already on the server, skipped"); continue
+        if link_only:
+            print(f"{base}: run {existing[run_name]} already on the server; linking events for: {cnames}")
+            link_events(existing[run_name], cyc, t["issued_time"], cids)
+        else:
+            print(f"{base}: '{run_name}' already on the server, skipped")
+        continue
+    if link_only:
+        print(f"{base}: not on the server, skipped (--link-only)"); continue
     missing = [f for f, _, _ in FILES if not os.path.isfile(f"{folder}/{f}")]
     if missing:
         print(f"{base}: missing {missing}, skipped"); continue
+    entry_country = COUNTRY if COUNTRY in counts or not counts else max(counts, key=counts.get)
     if dry:
-        print(f"{base}: would create model run '{run_name}' (track {t['id']}) + {len(FILES)} risk entries"); continue
+        print(f"{base}: would create model run '{run_name}' (track {t['id']}) + {len(FILES)} risk entries "
+              f"(entries: {NAME_BY_ID.get(entry_country, entry_country)}; events for: {cnames})")
+        link_events(0, cyc, t["issued_time"], cids)
+        continue
     body = json.dumps({"name": run_name, "model_run_time": t["issued_time"],
                        "model_run_completed": True, "tc_track": t["id"], "models": [MODEL_ID]})
     code, resp = curl(auth() + ["-H", "Content-Type: application/json", "-X", "POST", "-d", body, f"{P}/model_run/"])
     if code != 201:
         print(f"{base}: model run refused HTTP {code} {resp[:300]}"); continue
     run_id = json.loads(resp)["id"]
-    print(f"{base}: model run {run_id} created ({run_name}, track {t['id']})")
+    print(f"{base}: model run {run_id} created ({run_name}, track {t['id']}; affects: {cnames})")
     risk_ids = []
     for fname, label, cat in FILES:
-        args = auth() + ["-F", f"title=TC {cyc} {stamp} - {label}", "-F", f"country={COUNTRY}",
+        args = auth() + ["-F", f"title=TC {cyc} {stamp} - {label}", "-F", f"country={entry_country}",
                          "-F", f"model_run={run_id}"]
         if cat:
             args += ["-F", f"risk_category={cat}"]
@@ -90,14 +168,4 @@ for folder in folders:
     c, b = curl(auth() + ["-H", "Content-Type: application/json", "-X", "PATCH",
                           "-d", json.dumps({"risks": risk_ids}), f"{P}/model_run/{run_id}/"])
     print(f"   linked {len(risk_ids)} risks to run {run_id}: HTTP {c}")
-    # add the run to this cyclone's event (matched by name and country) so the dashboard lists it
-    events = [e for e in get(f"{P}/event/?format=json&page_size=100").get("results", [])
-              if cyc.lower() in e["title"].lower() and e["country"] == COUNTRY]
-    if not events:
-        print(f"   no event for {cyc} in country {COUNTRY}: create one, then add run {run_id} to it")
-    else:
-        ev = events[0]
-        c, b = curl(auth() + ["-H", "Content-Type: application/json", "-X", "PATCH",
-                              "-d", json.dumps({"model_runs": sorted(set(ev["model_runs"]) | {run_id})}),
-                              f"{P}/event/{ev['id']}/"])
-        print(f"   added run {run_id} to event {ev['id']} '{ev['title']}': HTTP {c}")
+    link_events(run_id, cyc, t["issued_time"], cids)

@@ -47,6 +47,17 @@ get_token() {
   fi
 }
 
+# notify "<subject>" "<message>": email NOTIFY_EMAIL (comma-separated) through the Pacific API mailer.
+# Does nothing if NOTIFY_EMAIL is unset or there is no token. Never stops the watcher if it fails.
+notify() {
+  [ -n "${NOTIFY_EMAIL:-}" ] || return 0
+  [ "$DRY" = 1 ] && return 0
+  local tok; tok="$(get_token)"; [ -n "$tok" ] || return 0
+  local body; body=$(python3 -I -c 'import json,sys; print(json.dumps({"recipients": [a.strip() for a in sys.argv[1].split(",") if a.strip()], "subject": sys.argv[2], "message": sys.argv[3]}))' "$NOTIFY_EMAIL" "$1" "$2")
+  local code; code=$(curl -s -m 30 -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Token $tok" -H "Content-Type: application/json" -d "$body" "$P/mailer/send/")
+  log "  email '$1': HTTP $code"
+}
+
 # new tracks, oldest first: "<id> <cyclone_name> <issued_time>"
 NEW=$(python3 -I - "$MAX_AGE_H" "$P" <<'PY'
 import json, subprocess, sys
@@ -74,6 +85,7 @@ echo "$NEW" | while read -r id name issued; do
   if [ "$tries" -ge "$MAX_TRIES" ]; then log "track $id ($name): failed $tries times, giving up (delete .watch_failed/$id to retry)"; continue; fi
   dir="outputs/${name}_$(date -u -d "$issued" +%Y%m%dT%H%M%SZ)"
   log "track $id ($name, issued $issued): new"
+  [ "$tries" = 0 ] && notify "New cyclone track: $name" "A new track $name (id $id, issued $issued) is available. REF is starting now; you will get another email when the run is on the dashboard."
   if [ "$DRY" = 1 ]; then log "  dry run: would run REF.sh then push $dir"; continue; fi
 
   if [ -f "$dir/regional-summary.csv" ]; then
@@ -83,11 +95,19 @@ echo "$NEW" | while read -r id name issued; do
   fi
   if [ ! -f "$dir/regional-summary.csv" ]; then
     echo $((tries + 1)) > ".watch_failed/$id"
-    log "  REF run failed or produced no outputs (attempt $((tries + 1))/$MAX_TRIES)"; continue
+    log "  REF run failed or produced no outputs (attempt $((tries + 1))/$MAX_TRIES)"
+    [ $((tries + 1)) -ge "$MAX_TRIES" ] && notify "REF run FAILED: $name" "The REF run for track $name (id $id) failed $MAX_TRIES times and will not be retried. See watch.log on the server. Delete .watch_failed/$id to retry."
+    continue
   fi
   if [ "$CAN_PUSH" = 0 ]; then log "  outputs saved in $dir, not uploaded (no Pacific login)"; continue; fi
   TOKEN="$(get_token)"
   if [ -z "$TOKEN" ]; then log "  could not get a Partner API token, outputs are in $dir; push later"; continue; fi
-  PARTNER_API_TOKEN="$TOKEN" python3 -I push_runs.py "$dir" || log "  push failed"
+  OUT="$(PARTNER_API_TOKEN="$TOKEN" python3 -I push_runs.py "$dir" 2>&1)"; echo "$OUT"
+  if echo "$OUT" | grep -q "linked 9 risks"; then
+    notify "REF run uploaded: $name" "The REF run for $name (track $id) finished and is on the Pacific Disaster API. $(echo "$OUT" | grep -E 'model run .* created|added run' | tr '\n' ' ')"
+  else
+    log "  push failed"
+    notify "REF upload FAILED: $name" "The REF run for $name (track $id) finished but the upload failed (token expired?). Outputs are in $dir. See watch.log. Fix the token in .env and run ./upload_watch.sh."
+  fi
   rm -f ".watch_failed/$id"
 done

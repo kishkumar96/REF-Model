@@ -25,15 +25,16 @@ BASE=https://pacific-disaster-api.spc.int/partner_api
 OUTPUT_DIR="${OUTPUT_DIR:-outputs}"
 DRY=""; [ "${1:-}" = "--dry-run" ] && DRY="--dry-run"
 
+TOKEN=""
 if [ -n "${PARTNER_USERNAME:-}" ] && [ -n "${PARTNER_PASSWORD:-}" ]; then
   TOKEN=$(curl -s -m 30 -X POST "$BASE/api-token-auth/" \
     --data-urlencode "username=$PARTNER_USERNAME" --data-urlencode "password=$PARTNER_PASSWORD" \
     | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null)
-  [ -n "$TOKEN" ] || { log "ERROR: login to the Pacific Disaster API failed (check PARTNER_USERNAME / PARTNER_PASSWORD)"; exit 1; }
-else
-  TOKEN="${PARTNER_API_TOKEN:-}"
-  [ -n "$TOKEN" ] || { log "ERROR: .env needs PARTNER_USERNAME + PARTNER_PASSWORD, or PARTNER_API_TOKEN"; exit 1; }
+  [ -n "$TOKEN" ] || log "login failed (check PARTNER_USERNAME / PARTNER_PASSWORD)"
 fi
+# no login, or the login failed: fall back to a token pasted into .env (valid for 2 days)
+[ -n "$TOKEN" ] || TOKEN="${PARTNER_API_TOKEN:-}"
+[ -n "$TOKEN" ] || { log "ERROR: no usable login or token in .env (need PARTNER_API_TOKEN, or PARTNER_USERNAME + PARTNER_PASSWORD)"; exit 1; }
 
 DIRS=""
 for d in "$OUTPUT_DIR"/*/; do
