@@ -34,7 +34,7 @@ P=$BASE/v1
 MAX_AGE_H="${MAX_AGE_H:-48}"
 MAX_TRIES="${MAX_TRIES:-3}"
 export PATH="/usr/bin:$PATH"
-mkdir -p .watch_failed
+mkdir -p .watch_failed .watch_done
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
 get_token() {
@@ -67,13 +67,16 @@ def get(u): return json.loads(subprocess.run(["curl", "-s", "-m", "120", u], cap
 tracks = get(f"{P}/cyclone_track/?format=json")
 tracks = tracks.get("results", tracks) if isinstance(tracks, dict) else tracks
 runs = {r["name"] for r in get(f"{P}/model_run/?format=json")}
+import os
 now = datetime.now(timezone.utc)
 for t in sorted(tracks, key=lambda t: t["id"]):
     if not t.get("issued_time") or "_" not in t["cyclone_name"]: continue
     issued = datetime.fromisoformat(t["issued_time"].replace("Z", "+00:00"))
     if now - issued > timedelta(hours=max_age): continue
     stamp, _, cyc = t["cyclone_name"].partition("_")
-    if f"Rapid Exposure Forecast - TC {cyc} {stamp}" in runs: continue
+    base = f"Rapid Exposure Forecast - TC {cyc} {stamp}"
+    if any(n == base or n.startswith(base + " (") for n in runs): continue
+    if os.path.exists(f".watch_done/{t['id']}"): continue
     print(t["id"], t["cyclone_name"], t["issued_time"])
 PY
 ) || { log "could not read the track list, will try again next time"; exit 1; }
@@ -102,9 +105,14 @@ echo "$NEW" | while read -r id name issued; do
   if [ "$CAN_PUSH" = 0 ]; then log "  outputs saved in $dir, not uploaded (no Pacific login)"; continue; fi
   TOKEN="$(get_token)"
   if [ -z "$TOKEN" ]; then log "  could not get a Partner API token, outputs are in $dir; push later"; continue; fi
-  OUT="$(PARTNER_API_TOKEN="$TOKEN" python3 -I push_runs.py "$dir" 2>&1)"; echo "$OUT"
-  if echo "$OUT" | grep -q "linked 9 risks"; then
-    notify "REF run uploaded: $name" "The REF run for $name (track $id) finished and is on the Pacific Disaster API. $(echo "$OUT" | grep -E 'model run .* created|added run' | tr '\n' ' ')"
+  OUT="$(PARTNER_API_TOKEN="$TOKEN" python3 -I push_runs.py "$dir" 2>&1)"; RC=$?; echo "$OUT"
+  if [ "$RC" = 0 ]; then
+    touch ".watch_done/$id"      # handled (even if no published country was affected)
+    if echo "$OUT" | grep -q "created"; then
+      notify "REF run uploaded: $name" "The REF run for $name (track $id) finished and is on the Pacific Disaster API. $(echo "$OUT" | grep -E 'model run .* created|added run|created event' | tr '\n' ' ')"
+    else
+      log "  nothing to upload: the storm affects no published country"
+    fi
   else
     log "  push failed"
     notify "REF upload FAILED: $name" "The REF run for $name (track $id) finished but the upload failed (token expired?). Outputs are in $dir. See watch.log. Fix the token in .env and run ./upload_watch.sh."

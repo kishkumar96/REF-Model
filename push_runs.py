@@ -10,10 +10,11 @@ Tokens expire after 2 days. COUNTRY_ID defaults to 3 (CK).
 
 DATA SEPARATION: REF is one regional model, so its exposure files mix every country the storm touches.
 Each country gets its OWN model run + entries holding only that country's rows (filtered before upload, failing
-closed: a row or feature that cannot be tied to the country is dropped). The home country (COUNTRY_ID, default
-3 = Cook Islands) always gets a run, named "Rapid Exposure Forecast - TC <name> <stamp>". Another country gets a run
-only if it is in PUBLISH_COUNTRIES (default "3,5" = Cook Islands + Samoa) AND the storm affects it; that run is named
-"... (<country>)". Countries not listed (e.g. Tonga) are withheld and never leave this machine.
+closed: a row or feature that cannot be tied to the country is dropped). The home country's name style (COUNTRY_ID, default
+3 = Cook Islands) keeps the plain run name "Rapid Exposure Forecast - TC <name> <stamp>"; any other country's run is
+named "... (<country>)". A country gets a run ONLY if it is in PUBLISH_COUNTRIES (default "3,5") AND the storm has rows
+there. A storm that affects no published country uploads nothing. Countries not listed are withheld and never leave
+this machine. Exit code is 1 if any upload step failed.
 The hazard files (track, wind swaths, track distance) are not country data and go into every run whole.
   --create-events   create the cyclone's event for a country that has none (or CREATE_EVENTS=1)
   --link-only       for runs already on the server, only (re)do the event linking
@@ -25,8 +26,7 @@ TOKEN = os.environ.get("PARTNER_API_TOKEN", "")
 COUNTRY = int(os.environ.get("COUNTRY_ID", "3"))  # 3 = CK on the Pacific Disaster API
 MODEL_ID = 2                                      # Rapid Exposure Forecast
 PUBLISH = [int(x) for x in os.environ.get("PUBLISH_COUNTRIES", "3,5").split(",") if x.strip()]
-if COUNTRY not in PUBLISH:
-    PUBLISH.insert(0, COUNTRY)
+FAILS = []   # every failed upload step is recorded here; the exit code reflects it
 # file -> (title suffix, risk_category); categories copied from the Wati runs
 FILES = [
     ("cyclone-track.geojson", "cyclone track", None),
@@ -153,6 +153,7 @@ def link_events(run_id, cyc, issued, cids):
                                   "-d", json.dumps({"model_runs": sorted(set(ev["model_runs"]) | {run_id})}),
                                   f"{P}/event/{ev['id']}/"])
             print(f"   added run {run_id} to event {ev['id']} '{ev['title']}' ({cname}): HTTP {c}")
+            if c != 200: FAILS.append(f"event {ev['id']} PATCH {c}")
         elif create_events:
             if dry:
                 print(f"   would create event 'Tropical Cyclone {cyc}' for {cname} with run {run_id}"); continue
@@ -162,6 +163,7 @@ def link_events(run_id, cyc, issued, cids):
                                   f"{P}/event/"])
             print(f"   created event 'Tropical Cyclone {cyc}' for {cname} with run {run_id}: HTTP {c}"
                   + ("" if c == 201 else f" {b[:200]}"))
+            if c != 201: FAILS.append(f"event create {c}")
         else:
             print(f"   no event for {cyc} in {cname}: re-run with --create-events, or create one and add run {run_id}")
 
@@ -170,7 +172,7 @@ def create_run(folder, base, cyc, stamp, run_name, t, entry_country, upload_path
                        "model_run_completed": True, "tc_track": t["id"], "models": [MODEL_ID]})
     code, resp = curl(auth() + ["-H", "Content-Type: application/json", "-X", "POST", "-d", body, f"{P}/model_run/"])
     if code != 201:
-        print(f"{base}: model run refused HTTP {code} {resp[:300]}"); return
+        print(f"{base}: model run refused HTTP {code} {resp[:300]}"); FAILS.append(f"model run {code}"); return
     run_id = json.loads(resp)["id"]
     print(f"{base}: model run {run_id} created ({run_name}, track {t['id']})")
     risk_ids = []
@@ -184,10 +186,13 @@ def create_run(folder, base, cyc, stamp, run_name, t, entry_country, upload_path
         print(f"   {fname}: HTTP {c}" + ("" if c == 201 else f" {b[:200]}"))
         if c == 201:
             risk_ids.append(json.loads(b)["id"])
+        else:
+            FAILS.append(f"entry {fname} {c}")
     # the run's own risks list is separate from each entry's model_run: set it so the dashboard shows them
     c, b = curl(auth() + ["-H", "Content-Type: application/json", "-X", "PATCH",
                           "-d", json.dumps({"risks": risk_ids}), f"{P}/model_run/{run_id}/"])
     print(f"   linked {len(risk_ids)} risks to run {run_id}: HTTP {c}")
+    if c != 200 or len(risk_ids) != len(FILES): FAILS.append(f"run {run_id} risks link {c}")
     link_events(run_id, cyc, t["issued_time"], cids)
 
 tracks = {t["cyclone_name"]: t for t in as_list(get(f"{P}/cyclone_track/?format=json"))}
@@ -203,9 +208,17 @@ for folder in folders:
     stamp, cyc = name.split("_", 1)
     base_run = f"Rapid Exposure Forecast - TC {cyc} {stamp}"
     counts = folder_countries(folder)
-    targets = [c for c in PUBLISH if c == COUNTRY or counts.get(c)]
+    targets = [c for c in PUBLISH if counts.get(c)]
     withheld = ", ".join(f"{NAME_BY_ID.get(c, c)} ({n} rows)" for c, n in sorted(counts.items()) if c not in targets)
     missing = [f for f, _, _ in FILES if not os.path.isfile(f"{folder}/{f}")]
+    if missing and not link_only:
+        print(f"{base}: missing {missing}, skipped"); FAILS.append(f"{base} missing files"); continue
+    if not counts:
+        print(f"{base}: regional-summary.csv has no recognisable country rows, nothing uploaded"); FAILS.append(f"{base} no countries"); continue
+    if not targets:
+        print(f"{base}: the storm affects no published country, nothing to upload"
+              + (f" (withheld: {withheld})" if withheld else ""))
+        continue
     for cid in targets:
         cname = str(NAME_BY_ID.get(cid, cid))
         run_name = base_run if cid == COUNTRY else f"{base_run} ({cname})"
@@ -220,8 +233,6 @@ for folder in folders:
             continue
         if link_only:
             print(f"{tag}: not on the server, skipped (--link-only)"); continue
-        if missing:
-            print(f"{tag}: missing {missing}, skipped"); continue
         tmp = tempfile.mkdtemp(prefix="ref_upload_")
         try:
             upload_paths, report = make_upload_set(folder, cid, tmp)
@@ -236,3 +247,5 @@ for folder in folders:
             shutil.rmtree(tmp, ignore_errors=True)
     if withheld:
         print(f"{base}: withheld (not in PUBLISH_COUNTRIES): {withheld}")
+
+sys.exit(1 if FAILS else 0)
